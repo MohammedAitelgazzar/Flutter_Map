@@ -3,6 +3,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:geolocator/geolocator.dart';
 
 const mapboxAccessToken =
     'pk.eyJ1Ijoic2ltb2FpdGVsZ2F6emFyIiwiYSI6ImNtMzVzeXYyazA2bWkybHMzb2Fxb3p6aGIifQ.ORYyvkZ2Z1H8WmouDkXtvQ';
@@ -19,6 +20,9 @@ class MapScreen extends StatefulWidget {
 class _MapScreenState extends State<MapScreen> {
   final MapController _mapController = MapController();
   final TextEditingController _searchController = TextEditingController();
+  LatLng? _currentPosition;
+  bool _tracking = false;
+  List<LatLng> _route = []; // Liste pour stocker le trajet (polyline)
 
   @override
   void initState() {
@@ -28,7 +32,37 @@ class _MapScreenState extends State<MapScreen> {
     });
   }
 
-  // Fonction pour effectuer une recherche de lieu et recentrer la carte
+  Future<void> _getCurrentLocation() async {
+    bool serviceEnabled;
+    LocationPermission permission;
+
+    serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      return;
+    }
+
+    permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        return;
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      return;
+    }
+
+    Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high);
+
+    setState(() {
+      _currentPosition = LatLng(position.latitude, position.longitude);
+    });
+
+    _mapController.move(_currentPosition!, 15);
+  }
+
   Future<void> _searchLocation() async {
     final query = _searchController.text;
     if (query.isEmpty) return;
@@ -47,8 +81,70 @@ class _MapScreenState extends State<MapScreen> {
 
         // Recentrer la carte
         _mapController.move(LatLng(latitude, longitude), 15);
+
+        setState(() {
+          _tracking = true;
+        });
+
+        // Obtenez l'itinéraire entre la position actuelle et l'emplacement recherché
+        _getRoute(LatLng(latitude, longitude));
       }
     }
+  }
+
+  // Fonction pour obtenir l'itinéraire entre la position actuelle et l'emplacement recherché
+  Future<void> _getRoute(LatLng destination) async {
+    if (_currentPosition == null) return;
+
+    final url = Uri.parse(
+      'https://api.mapbox.com/directions/v5/mapbox/driving/${_currentPosition!.longitude},${_currentPosition!.latitude};${destination.longitude},${destination.latitude}.json?access_token=$mapboxAccessToken&alternatives=false&geometries=geojson',
+    );
+
+    final response = await http.get(url);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      if (data['routes'].isNotEmpty) {
+        final route = data['routes'][0]['geometry']['coordinates'];
+        List<LatLng> routePoints = route
+            .map<LatLng>((point) => LatLng(point[1], point[0]))
+            .toList();
+
+        setState(() {
+          _route = routePoints;
+        });
+
+        // Calculer le centre de l'itinéraire
+        double latSum = 0;
+        double lonSum = 0;
+        for (var point in routePoints) {
+          latSum += point.latitude;
+          lonSum += point.longitude;
+        }
+
+        // Calculer le centre moyen
+        LatLng center = LatLng(latSum / routePoints.length, lonSum / routePoints.length);
+
+        // Mettre à jour la carte pour centrer le trajet
+        _mapController.move(center, 14); // Ajuster le niveau de zoom ici (14)
+      }
+    }
+  }
+
+  // Fonction pour gérer le clic sur la carte et créer l'itinéraire
+  void _onMapTapped(LatLng latLng) {
+    if (_currentPosition != null) {
+      _getRoute(latLng); // Calculer l'itinéraire
+      setState(() {
+        _tracking = true; // Activer le suivi
+      });
+    }
+  }
+
+  // Fonction pour arrêter le suivi de localisation
+  void _stopTracking() {
+    setState(() {
+      _tracking = false;
+    });
   }
 
   @override
@@ -81,6 +177,15 @@ class _MapScreenState extends State<MapScreen> {
                   icon: Icon(Icons.search),
                   onPressed: _searchLocation,
                 ),
+                IconButton(
+                  icon: Icon(Icons.my_location),
+                  onPressed: _getCurrentLocation,
+                ),
+                if (_tracking)
+                  IconButton(
+                    icon: Icon(Icons.stop),
+                    onPressed: _stopTracking,
+                  ),
               ],
             ),
           ),
@@ -91,6 +196,9 @@ class _MapScreenState extends State<MapScreen> {
         options: MapOptions(
           minZoom: 5,
           maxZoom: 25,
+          onTap: (_, latLng) {
+            _onMapTapped(latLng); // Clic sur la carte pour générer l'itinéraire
+          },
         ),
         children: [
           TileLayer(
@@ -98,9 +206,35 @@ class _MapScreenState extends State<MapScreen> {
                 'https://api.mapbox.com/styles/v1/{id}/tiles/{z}/{x}/{y}?access_token={accessToken}',
             additionalOptions: {
               'accessToken': mapboxAccessToken,
-              'id': 'mapbox/satellite-v9',
+              'id': 'mapbox/streets-v11',
             },
           ),
+          // Affichage du trajet sur la carte
+          if (_route.isNotEmpty)
+            PolylineLayer(
+              polylines: [
+                Polyline(
+                  points: _route,
+                  strokeWidth: 4.0,
+                  color: Colors.blue,
+                ),
+              ],
+            ),
+          if (_currentPosition != null)
+            MarkerLayer(
+              markers: [
+                Marker(
+                  point: _currentPosition!,
+                  width: 30.0,
+                  height: 30.0,
+                  child: Icon(
+                    Icons.location_on,
+                    size: 30,
+                    color: Colors.red,
+                  ),
+                ),
+              ],
+            ),
         ],
       ),
     );
