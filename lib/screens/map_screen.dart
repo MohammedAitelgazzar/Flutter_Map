@@ -22,7 +22,8 @@ class _MapScreenState extends State<MapScreen> {
   final TextEditingController _searchController = TextEditingController();
   LatLng? _currentPosition;
   bool _tracking = false;
-  List<LatLng> _route = []; // Liste pour stocker le trajet (polyline)
+  List<LatLng> _route = []; 
+  
 
   @override
   void initState() {
